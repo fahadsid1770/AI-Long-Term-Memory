@@ -7,7 +7,7 @@ from utils.logger import logger
 
 bedrock_client = boto3.client("bedrock-runtime", region_name= AWS_REGION)
 
-def generate_emnbedding(text: str):
+def generate_embedding(text: str):
     if not text.strip():
         raise ValueError("Input text cannot be empty")
     try:
@@ -33,6 +33,16 @@ async def send_to_bedrock(promt):
     ]
     model_id = LLM_MODEL_ID
     try:
-        response=
-    except ClientError as e:
+        response= await asyncio.to_thread(
+            bedrock_client.converse,
+            model_id=model_id,
+            messages=payload,
+        )
+        model_response = response["output"]["message"]
+        # Concatenate text parts from the model response
+        response_text = " ".join(i["text"] for i in model_response["content"])
+        return response_text
+    except ClientError as err:
+        logger.error(f"A client error occured: {err.response['Error']['Message']}")
+        raise
         
