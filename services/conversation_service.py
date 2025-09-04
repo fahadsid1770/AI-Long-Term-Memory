@@ -4,16 +4,13 @@ from bson.objectid import ObjectId
 from bson import json_util
 from database.mongodb import conversations
 from database.models import Message
-from services.bedrock_service import generate_embedding, send_to_bedrock
+from services.embedding_service import generate_embedding, get_chat_response
 from models.pydantic_models import RememberRequest
 from services.memory_service import remember_content
 from utils.logger import logger
-import config
+import configuration.config as config
 
 def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
-    """
-    Perform a hybrid search operation on MongoDB by combining full-text and vector (semantic) search results.
-    """
     pipeline = [
         {
             "$search": {
@@ -122,11 +119,9 @@ def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
         raise
 
 async def add_conversation_message(message_input):
-    """Add a message to the conversation history"""
     try:
         new_message = Message(message_input)
         conversations.insert_one(new_message.to_dict())
-        # For significant human messages, create a memory node
         if message_input.type == "human" and len(message_input.text) > 30:
             try:
                 memory_content = (
@@ -145,15 +140,9 @@ async def add_conversation_message(message_input):
         raise
 
 async def search_memory(user_id, query):
-    """
-    Searches memory items by user_id and a textual query using hybrid search.
-    """
     try:
-        # Generate embedding for the query text
         vector_query = generate_embedding(query)
-        # Perform hybrid search over the stored messages
         documents = hybrid_search(query, vector_query, user_id, weight=0.8, top_n=5)
-        # Filter results by minimum hybrid score threshold
         relevant_results = [doc for doc in documents if doc["score"] >= 0.70]
         if not relevant_results:
             return {"documents": "No documents found"}
@@ -164,11 +153,7 @@ async def search_memory(user_id, query):
         raise
 
 async def get_conversation_context(_id):
-    """
-    Fetches conversation records with context surrounding a specific message
-    """
     try:
-        # Fetch the conversation record for the given object ID
         conversation_record = conversations.find_one(
             {"_id": ObjectId(_id)},
             projection={
@@ -236,11 +221,7 @@ async def get_conversation_context(_id):
         raise
 
 async def generate_conversation_summary(documents):
-    """
-    Generates a detailed and structured summary for a conversation provided in JSON format.
-    """
     try:
-        # Construct a prompt with detailed instructions and conversation history
         prompt = (
             f"You are an advanced AI assistant skilled in analyzing and summarizing conversation histories while preserving all essential details.\n"
             f"Given the following conversation data in JSON format, generate a detailed and structured summary that captures all key points, topics discussed, decisions made, and relevant insights.\n\n"
@@ -258,14 +239,12 @@ async def generate_conversation_summary(documents):
             f"Provide a **clear, structured, and comprehensive** summary ensuring no critical detail is overlooked.\n\n"
             f"Input JSON: {json.dumps(documents, default=json_util.default)}"
         )
-        # Send prompt to Bedrock and wait for summary response
-        summary = await send_to_bedrock(prompt)
+        summary = await get_chat_response(prompt)
         return {"summary": summary}
     except Exception as error:
         logger.error(str(error))
         raise
 
 def serialize_document(doc):
-    """Helper function to serialize MongoDB documents."""
-    doc["_id"] = str(doc["_id"])  # Convert ObjectId to string
+    doc["_id"] = str(doc["_id"])
     return doc

@@ -1,6 +1,6 @@
 import pymongo
 import pymongo.errors
-from config import (
+from configuration.config import (
     MONGODB_URI, MONGODB_DB_NAME, CONVERSATIONS_COLLECTION, MEMORY_NODES_COLLECTION,
     CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME, CONVERSATIONS_FULLTEXT_SEARCH_INDEX_NAME,
     MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
@@ -27,7 +27,7 @@ def initialize_mongodb():
                             {
                                 "type": "vector",
                                 "path": "embeddings",
-                                "numDimensions": 1536,
+                                "numDimensions": 1024,
                                 "similarity": "cosine",
                             },
                             {"type": "filter", "path": "user_id"}

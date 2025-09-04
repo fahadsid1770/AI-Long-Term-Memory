@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+load_dotenv()
 
 # Constants
 MAX_DEPTH = 5
@@ -9,7 +10,7 @@ DECAY_FACTOR = 0.99
 REINFORCEMENT_FACTOR = 1.1
 
 # Application settings
-APP_NAME = "AI-Memory-Service"
+APP_NAME = "AI-Long-Term-Memory-Service"
 APP_VERSION = "1.0"
 APP_DESCRIPTION = "AI Memory Service"
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
@@ -17,11 +18,6 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 # Service configuration
 SERVICE_HOST = os.getenv("SERVICE_HOST", "0.0.0.0")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8182"))
-
-# AWS Configuration
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v1")
-LLM_MODEL_ID = os.getenv("LLM_MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
 
 # MongoDB Configuration
 MONGODB_URI = os.getenv("MONGODB_URI")

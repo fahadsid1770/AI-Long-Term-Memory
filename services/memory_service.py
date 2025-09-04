@@ -1,12 +1,12 @@
 import datetime
 from bson.objectid import ObjectId
 import pymongo
-from config import MAX_DEPTH, SIMILARITY_THRESHOLD, REINFORCEMENT_FACTOR, DECAY_FACTOR
+from configuration.config import MAX_DEPTH, SIMILARITY_THRESHOLD, REINFORCEMENT_FACTOR, DECAY_FACTOR
 from database.mongodb import memory_nodes
-from services.bedrock_service import generate_embedding, send_to_bedrock
+from services.embedding_service import generate_embedding, get_chat_response
 from utils.helpers import cosine_similarity
 from typing import List, Dict
-from config import MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
+from configuration.config import MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
 from utils.logger import logger
 
 async def find_similar_memories(
@@ -148,7 +148,8 @@ async def remember_content(request):
             "and whether it contains key facts or decisions. Respond with just a number.\n\n"
             f"Text to evaluate: {request.content}"
         )
-        importance_rating_text = await send_to_bedrock(importance_assessment_prompt)
+        # Replaced send_to_bedrock with get_chat_response
+        importance_rating_text = await get_chat_response(importance_assessment_prompt)
         # Extract numeric rating (handle potential non-numeric responses)
         try:
             importance_rating = float(
@@ -164,7 +165,8 @@ async def remember_content(request):
             "Create a one-sentence summary of the key information in this text. Be specific and concise:\n\n"
             + request.content
         )
-        summary = await send_to_bedrock(summary_prompt)
+        # Replaced send_to_bedrock with get_chat_response
+        summary = await get_chat_response(summary_prompt)
         # Create new memory node
         new_memory = {
             "user_id": request.user_id,
@@ -191,7 +193,8 @@ async def remember_content(request):
                     f"TEXT 1: {new_memory['content']}\n\n"
                     f"TEXT 2: {memory['content']}"
                 )
-                combined_content = await send_to_bedrock(
+                # Replaced send_to_bedrock with get_chat_response
+                combined_content = await get_chat_response(
                     f"{combined_content_prompt}\n\nCombine these texts effectively."
                 )
                 # Update metrics
@@ -210,7 +213,8 @@ async def remember_content(request):
                     "Create a one-sentence summary capturing the key information:\n\n"
                     + combined_content
                 )
-                summary = await send_to_bedrock(
+                # Replaced send_to_bedrock with get_chat_response
+                summary = await get_chat_response(
                     f"{summary_prompt}\n\nCreate a concise summary."
                 )
                 # Update the memory

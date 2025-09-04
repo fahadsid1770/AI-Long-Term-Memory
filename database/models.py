@@ -1,6 +1,6 @@
 import datetime
 from fastapi import HTTPException
-from services.bedrock_service import generate_embedding
+from services.embedding_service import generate_embedding
 
 class Message:
     def __init__(self, message_data):

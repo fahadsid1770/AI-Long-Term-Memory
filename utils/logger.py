@@ -1,5 +1,5 @@
 import sys
-import config
+import configuration.config as config
 import logging
 
 

@@ -1,7 +1,7 @@
 import traceback
 from typing import Dict, Any 
 from fastapi import HTTPException
-import config
+import configuration.config as config
 from utils.logger import logger
 
 def format_error_response(error: Exception) -> Dict[str, Any]:

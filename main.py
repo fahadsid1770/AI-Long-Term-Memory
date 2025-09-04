@@ -1,12 +1,12 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
 
-import config
+import configuration.config as config
 from database.mongodb import initialize_mongodb
 
 # Import models and services
 from models.pydantic_models import ErrorResponse, MessageInput
-from services.bedrock_service import generate_embedding
+from services.embedding_service import generate_embedding
 from services.conversation_service import (
     add_conversation_message,
     generate_conversation_summary,
