@@ -23,7 +23,13 @@ def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
         {"$setWindowFields": {"output": {"maxScore": {"$max": "$fts_score"}}}},
         {
             "$addFields": {
-                "normalized_fts_score": {"$divide": ["$fts_score", "$maxScore"]}
+                "normalized_fts_score": {
+                    "$cond": {
+                        "if": {"$eq": ["$maxScore", 0]},
+                        "then": 0,
+                        "else": {"$divide": ["$fts_score", "$maxScore"]}
+                    }
+                }
             }
         },
         {
@@ -58,7 +64,11 @@ def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
                     {
                         "$addFields": {
                             "normalized_vs_score": {
-                                "$divide": ["$vs_score", "$maxScore"]
+                                "$cond": {
+                                    "if": {"$eq": ["$maxScore", 0]},
+                                    "then": 0,
+                                    "else": {"$divide": ["$vs_score", "$maxScore"]}
+                                }
                             }
                         }
                     },
@@ -120,7 +130,7 @@ def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
 
 async def add_conversation_message(message_input):
     try:
-        new_message = Message(message_input)
+        new_message = await Message.create(message_input)
         conversations.insert_one(new_message.to_dict())
         if message_input.type == "human" and len(message_input.text) > 30:
             try:
@@ -141,7 +151,7 @@ async def add_conversation_message(message_input):
 
 async def search_memory(user_id, query):
     try:
-        vector_query = generate_embedding(query)
+        vector_query = await generate_embedding(query)
         documents = hybrid_search(query, vector_query, user_id, weight=0.8, top_n=5)
         relevant_results = [doc for doc in documents if doc["score"] >= 0.70]
         if not relevant_results:

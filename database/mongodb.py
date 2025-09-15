@@ -27,7 +27,7 @@ def initialize_mongodb():
                             {
                                 "type": "vector",
                                 "path": "embeddings",
-                                "numDimensions": 1024,
+                                "numDimensions": 384,
                                 "similarity": "cosine",
                             },
                             {"type": "filter", "path": "user_id"}
@@ -75,7 +75,7 @@ def initialize_mongodb():
                             {
                                 "type": "vector",
                                 "path": "embeddings",
-                                "numDimensions": 1536,
+                                "numDimensions": 384,
                                 "similarity": "cosine",
                             },
                             {"type": "filter", "path": "user_id"},

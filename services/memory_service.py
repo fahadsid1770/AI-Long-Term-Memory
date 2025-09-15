@@ -118,7 +118,7 @@ async def remember_content(request):
         if not request.content.strip():
             return {"message": "Cannot remember empty content"}
         # Generate embedding for the content
-        embeddings = generate_embedding(request.content)
+        embeddings = await generate_embedding(request.content)
         # Check for similar existing memories before creating a new one
         similar_memories = await find_similar_memories(request.user_id, embeddings)
         # If we already have very similar memories, reinforce them instead

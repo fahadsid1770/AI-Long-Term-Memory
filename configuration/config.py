@@ -20,7 +20,9 @@ SERVICE_HOST = os.getenv("SERVICE_HOST", "0.0.0.0")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8182"))
 
 # MongoDB Configuration
-MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI environment variable must be set")
 MONGODB_DB_NAME = "ai-long-term-memory"
 CONVERSATIONS_COLLECTION = "conversations"
 MEMORY_NODES_COLLECTION = "memory_nodes"

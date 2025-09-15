@@ -55,7 +55,7 @@ async def retrieve_memory(user_id: str, text: str):
     """
     try:
         # Generate embedding for the query text
-        vector_query = generate_embedding(text)
+        vector_query = await generate_embedding(text)
 
         # Search for relevant memory items
         memory_items = await search_memory(user_id, text)
@@ -75,7 +75,18 @@ async def retrieve_memory(user_id: str, text: str):
             }
 
         # Extract conversation ID from the first memory item
-        object_id = memory_items["documents"][0]["_id"]
+        documents = memory_items["documents"]
+        if not isinstance(documents, list) or not documents:
+            return {
+                "related_conversation": "No valid documents found",
+                "conversation_summary": "No summary found",
+                "similar_memories": (
+                    similar_memories
+                    if similar_memories
+                    else "No similar memories found"
+                ),
+            }
+        object_id = documents[0]["_id"]
 
         # Retrieve conversation context around the matching memory item
         context = await get_conversation_context(object_id)
