@@ -10,8 +10,7 @@ import os
 from sentence_transformers import SentenceTransformer
 from utils.logger import logger
 
-# Initialize the Sentence-Transformers model once for efficiency.
-# Allow configuration of the model via environment variable
+
 MODEL_NAME = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
 
 try:

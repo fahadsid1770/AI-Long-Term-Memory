@@ -35,7 +35,6 @@ class Config:
         self.SERVICE_PORT = int(os.getenv("SERVICE_PORT", "8182"))
         
         # Security settings
-        self.API_KEY = os.getenv("API_KEY")
         self.ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
         
         # MongoDB Configuration
@@ -73,9 +72,6 @@ class Config:
         
         # Production-specific validations
         if not self.DEBUG:
-            if not self.API_KEY:
-                errors.append("API_KEY must be set in production mode")
-            
             if self.SERVICE_HOST == "0.0.0.0" and not os.getenv("DOCKER_ENV"):
                 errors.append("SERVICE_HOST should not be 0.0.0.0 in production unless in Docker")
         
@@ -134,7 +130,6 @@ class Config:
                 "database_name": self.MONGODB_DB_NAME
             },
             "security": {
-                "api_key_configured": bool(self.API_KEY),
                 "allowed_origins": len(self.ALLOWED_ORIGINS)
             },
             "memory_system": {

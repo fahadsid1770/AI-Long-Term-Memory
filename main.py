@@ -23,7 +23,7 @@ from services.conversation_service import (
 from services.memory_service import find_similar_memories
 from utils import error_utils
 from utils.logger import logger
-from middleware.auth import verify_api_key, optional_verify_api_key
+# Authentication removed - no longer needed
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -211,8 +211,7 @@ async def liveness_check():
 @limiter.limit("30/minute")  # Allow 30 requests per minute per IP
 async def add_message(
     request: Request,
-    message: MessageInput,
-    api_key: str = Depends(verify_api_key)
+    message: MessageInput
 ):
     """Add a message to the conversation history"""
     try:
@@ -232,8 +231,7 @@ async def add_message(
 async def retrieve_memory(
     request: Request,
     user_id: str,
-    text: str,
-    api_key: str = Depends(verify_api_key)
+    text: str
 ):
     """
     Retrieve memory items, context, summary, and similar memory nodes in a single request
