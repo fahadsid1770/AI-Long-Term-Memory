@@ -9,6 +9,12 @@ from typing import List, Dict
 from configuration.config import MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
 from utils.logger import logger
 
+def get_memory_collection():
+    """Get memory nodes collection with validation"""
+    if memory_nodes is None:
+        raise RuntimeError("Memory nodes collection not initialized")
+    return memory_nodes
+
 async def find_similar_memories(
     user_id: str, embedding: List[float], top_n: int = 3
 ) -> List[Dict]:
@@ -28,7 +34,8 @@ async def find_similar_memories(
         List of similar memory nodes with similarity scores
     """
     try:
-        response = memory_nodes.aggregate(
+        collection = get_memory_collection()
+        response = collection.aggregate(
             [
                 {
                     "$vectorSearch": {
@@ -74,41 +81,81 @@ async def find_similar_memories(
         raise
 
 
+async def update_importance_batch(user_id, embedding):
+    """Update importance of memories based on similarity to new content - optimized batch version"""
+    try:
+        # Get all user memories in one query
+        collection = get_memory_collection()
+        user_memories = list(collection.find(
+            {"user_id": user_id},
+            {"_id": 1, "embeddings": 1, "importance": 1, "access_count": 1}
+        ))
+        
+        if not user_memories:
+            return
+        
+        # Prepare bulk operations
+        bulk_operations = []
+        
+        for doc in user_memories:
+            doc_id = doc["_id"]
+            memory_embedding = doc["embeddings"]
+            
+            # Calculate similarity
+            similarity = cosine_similarity(embedding, memory_embedding)
+            
+            if similarity > SIMILARITY_THRESHOLD:
+                # Reinforce similar memories
+                new_importance = min(doc["importance"] * REINFORCEMENT_FACTOR, 1.0)  # Cap at 1.0
+                new_access_count = doc["access_count"] + 1
+            else:
+                # Decay less relevant memories
+                new_importance = max(doc["importance"] * DECAY_FACTOR, 0.1)  # Floor at 0.1
+                new_access_count = doc["access_count"]
+            
+            # Add to bulk operations
+            bulk_operations.append(
+                pymongo.UpdateOne(
+                    {"_id": doc_id},
+                    {
+                        "$set": {
+                            "importance": new_importance,
+                            "access_count": new_access_count,
+                            "last_accessed": datetime.datetime.now(datetime.timezone.utc)
+                        }
+                    }
+                )
+            )
+        
+        # Execute all updates in one batch
+        if bulk_operations:
+            result = collection.bulk_write(bulk_operations, ordered=False)
+            logger.info(f"Updated {result.modified_count} memories for user {user_id}")
+            
+    except Exception as e:
+        logger.error(f"Error in batch importance update: {str(e)}")
+        raise
+
+# Keep the old function for backwards compatibility but make it call the optimized version
 async def update_importance(user_id, embedding):
     """Update importance of memories based on similarity to new content"""
-    cursor = memory_nodes.find({"user_id": user_id})
-    for doc in cursor:
-        doc_id = doc["_id"]
-        memory_embedding = doc["embeddings"]
-        similarity = cosine_similarity(embedding, memory_embedding)
-        if similarity > SIMILARITY_THRESHOLD:
-            # Reinforce similar memories
-            new_importance = doc["importance"] * REINFORCEMENT_FACTOR
-            new_access_count = doc["access_count"] + 1
-        else:
-            # Decay less relevant memories
-            new_importance = doc["importance"] * DECAY_FACTOR
-            new_access_count = doc["access_count"]
-        # Update in database
-        memory_nodes.update_one(
-            {"_id": doc_id},
-            {"$set": {"importance": new_importance, "access_count": new_access_count}},
-        )
+    await update_importance_batch(user_id, embedding)
 
 
 async def prune_memories(user_id):
     """Prune less important memories exceeding the maximum depth"""
-    count = memory_nodes.count_documents({"user_id": user_id})
+    collection = get_memory_collection()
+    count = collection.count_documents({"user_id": user_id})
     if count > MAX_DEPTH:
         # Find low importance memories to delete
         cursor = (
-            memory_nodes.find({"user_id": user_id})
+            collection.find({"user_id": user_id})
             .sort([("importance", pymongo.ASCENDING)])
             .limit(count - MAX_DEPTH)
         )
         # Delete them
         for doc in cursor:
-            memory_nodes.delete_one({"_id": doc["_id"]})
+            collection.delete_one({"_id": doc["_id"]})
 
 
 async def remember_content(request):
@@ -125,7 +172,8 @@ async def remember_content(request):
         for memory in similar_memories:
             if memory["similarity"] > 0.85:  # High similarity threshold
                 # Update existing memory instead of creating a new one
-                memory_nodes.update_one(
+                collection = get_memory_collection()
+                collection.update_one(
                     {"_id": ObjectId(memory["id"])},
                     {
                         "$set": {
@@ -179,7 +227,8 @@ async def remember_content(request):
             "embeddings": embeddings,
         }
         # Save to database
-        result = memory_nodes.insert_one(new_memory)
+        collection = get_memory_collection()
+        result = collection.insert_one(new_memory)
         memory_id = str(result.inserted_id)
         # Find similar memories for potential merging
         similar_memories = await find_similar_memories(request.user_id, embeddings)
@@ -218,7 +267,7 @@ async def remember_content(request):
                     f"{summary_prompt}\n\nCreate a concise summary."
                 )
                 # Update the memory
-                memory_nodes.update_one(
+                collection.update_one(
                     {"_id": ObjectId(memory_id)},
                     {
                         "$set": {
@@ -231,10 +280,10 @@ async def remember_content(request):
                     },
                 )
                 # Delete the merged memory
-                memory_nodes.delete_one({"_id": ObjectId(memory["id"])})
+                collection.delete_one({"_id": ObjectId(memory["id"])})
                 break
         # Update importance of other memories based on relationship to this memory
-        await update_importance(request.user_id, embeddings)
+        await update_importance_batch(request.user_id, embeddings)
         # Prune excessive memories if needed
         await prune_memories(request.user_id)
         logger.info(f"Memory created for user {request.user_id}: {summary[:50]}...")

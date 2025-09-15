@@ -10,128 +10,124 @@ from services.memory_service import remember_content
 from utils.logger import logger
 import configuration.config as config
 
-def hybrid_search(query, vector_query, user_id, weight=0.5, top_n=10):
-    pipeline = [
-        {
-            "$search": {
-                "index":config.CONVERSATIONS_FULLTEXT_SEARCH_INDEX_NAME,
-                "text": {"query": query, "path": "text"},
-            }
-        },
-        {"$match": {"user_id": user_id}},
-        {"$addFields": {"fts_score": {"$meta": "searchScore"}}},
-        {"$setWindowFields": {"output": {"maxScore": {"$max": "$fts_score"}}}},
-        {
-            "$addFields": {
-                "normalized_fts_score": {
-                    "$cond": {
-                        "if": {"$eq": ["$maxScore", 0]},
-                        "then": 0,
-                        "else": {"$divide": ["$fts_score", "$maxScore"]}
-                    }
-                }
-            }
-        },
-        {
-            "$project": {
-                "text": 1,
-                "type": 1,
-                "timestamp": 1,
-                "conversation_id": 1,
-                "normalized_fts_score": 1,
-            }
-        },
-        {
-            "$unionWith": {
-                "coll": "conversations",
-                "pipeline": [
-                    {
-                        "$vectorSearch": {
-                            "index": config.CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME,
-                            "queryVector": vector_query,
-                            "path": "embeddings",
-                            "numCandidates": 200,
-                            "limit": top_n,
-                            "filter": {"user_id": user_id},
-                        }
-                    },
-                    {"$addFields": {"vs_score": {"$meta": "vectorSearchScore"}}},
-                    {
-                        "$setWindowFields": {
-                            "output": {"maxScore": {"$max": "$vs_score"}}
-                        }
-                    },
-                    {
-                        "$addFields": {
-                            "normalized_vs_score": {
-                                "$cond": {
-                                    "if": {"$eq": ["$maxScore", 0]},
-                                    "then": 0,
-                                    "else": {"$divide": ["$vs_score", "$maxScore"]}
+def get_conversations_collection():
+    """Get conversations collection with validation"""
+    if conversations is None:
+        raise RuntimeError("Conversations collection not initialized")
+    return conversations
+
+def optimized_hybrid_search(query, vector_query, user_id, weight=0.8, top_n=5):
+    """Optimized hybrid search with better performance and caching considerations"""
+    try:
+        collection = get_conversations_collection()
+        
+        # Simplified pipeline with better performance
+        pipeline = [
+            {
+                "$search": {
+                    "index": "conversations_compound_search_index",  # Needs to be created
+                    "compound": {
+                        "should": [
+                            {
+                                "text": {
+                                    "query": query,
+                                    "path": "text"
+                                }
+                            },
+                            {
+                                "knnBeta": {
+                                    "vector": vector_query,
+                                    "path": "embeddings",
+                                    "k": top_n * 2  # Get more candidates for better results
                                 }
                             }
-                        }
+                        ]
                     },
-                    {
-                        "$project": {
-                            "text": 1,
-                            "type": 1,
-                            "timestamp": 1,
-                            "conversation_id": 1,
-                            "normalized_vs_score": 1,
-                        }
-                    },
-                ],
-            }
-        },
-        {
-            "$group": {
-                "_id": "$_id",  # Group by document ID
-                "fts_score": {"$max": "$normalized_fts_score"},
-                "vs_score": {"$max": "$normalized_vs_score"},
-                "text_field": {"$first": "$text"},
-                "type_field": {"$first": "$type"},
-                "timestamp_field": {"$first": "$timestamp"},
-                "conversation_id_field": {"$first": "$conversation_id"},
-            }
-        },
-        {
-            "$addFields": {
-                "hybrid_score": {
-                    "$add": [
-                        {"$multiply": [weight, {"$ifNull": ["$vs_score", 0]}]},
-                        {"$multiply": [1 - weight, {"$ifNull": ["$fts_score", 0]}]},
-                    ]
+                    "filter": {"user_id": user_id}
+                }
+            },
+            {
+                "$addFields": {
+                    "score": {"$meta": "searchScore"},
+                    "search_highlights": {"$meta": "searchHighlights"}
+                }
+            },
+            {"$limit": top_n},
+            {
+                "$project": {
+                    "_id": 1,
+                    "text": 1,
+                    "type": 1,
+                    "timestamp": 1,
+                    "conversation_id": 1,
+                    "user_id": 1,
+                    "score": 1
                 }
             }
-        },
-        {"$sort": {"hybrid_score": -1}},  # Sort by combined hybrid score descending
-        {"$limit": top_n},  # Limit final output
-        {
-            "$project": {
-                "_id": 1,
-                "fts_score": 1,
-                "vs_score": 1,
-                "score": "$hybrid_score",
-                "text": "$text_field",
-                "type": "$type_field",
-                "timestamp": "$timestamp_field",
-                "conversation_id": "$conversation_id_field",
-            }
-        },
-    ]
-    # Execute the aggregation pipeline and return the results
-    try:
-        results = list(conversations.aggregate(pipeline))
+        ]
+        
+        results = list(collection.aggregate(pipeline))
+        logger.debug(f"Hybrid search returned {len(results)} results for user {user_id}")
         return results
+        
     except Exception as e:
-        logger.error(f"Error in hybrid_search: {e}")
+        logger.error(f"Error in optimized hybrid search: {e}")
+        # Fallback to simpler vector search if compound search fails
+        return fallback_vector_search(vector_query, user_id, top_n)
+
+def fallback_vector_search(vector_query, user_id, top_n=5):
+    """Fallback vector search if compound search is not available"""
+    try:
+        collection = get_conversations_collection()
+        
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": config.CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME,
+                    "queryVector": vector_query,
+                    "path": "embeddings",
+                    "numCandidates": min(top_n * 10, 100),  # Optimized candidates
+                    "limit": top_n,
+                    "filter": {"user_id": user_id}
+                }
+            },
+            {
+                "$addFields": {
+                    "score": {"$meta": "vectorSearchScore"}
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "text": 1,
+                    "type": 1,
+                    "timestamp": 1,
+                    "conversation_id": 1,
+                    "user_id": 1,
+                    "score": 1
+                }
+            }
+        ]
+        
+        results = list(collection.aggregate(pipeline))
+        logger.info(f"Fallback vector search returned {len(results)} results")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in fallback vector search: {e}")
         raise
+
+# Keep original function for backwards compatibility
+def hybrid_search(query, vector_query, user_id, weight=0.8, top_n=5):
+    """Original hybrid search - now calls optimized version"""
+    return optimized_hybrid_search(query, vector_query, user_id, weight, top_n)
 
 async def add_conversation_message(message_input):
     try:
+        collection = get_conversations_collection()
         new_message = await Message.create(message_input)
-        conversations.insert_one(new_message.to_dict())
+        result = collection.insert_one(new_message.to_dict())
+        logger.debug(f"Inserted message with ID: {result.inserted_id}")
         if message_input.type == "human" and len(message_input.text) > 30:
             try:
                 memory_content = (
@@ -164,7 +160,8 @@ async def search_memory(user_id, query):
 
 async def get_conversation_context(_id):
     try:
-        conversation_record = conversations.find_one(
+        collection = get_conversations_collection()
+        conversation_record = collection.find_one(
             {"_id": ObjectId(_id)},
             projection={
                 "_id": 0,
@@ -188,7 +185,7 @@ async def get_conversation_context(_id):
             next_limit = 3
         # Get messages before target
         prev_cursor = (
-            conversations.find(
+            collection.find(
                 {
                     "user_id": user_id,
                     "conversation_id": conversation_id,
@@ -205,7 +202,7 @@ async def get_conversation_context(_id):
         context = list(prev_cursor)
         # Get messages after target
         next_cursor = (
-            conversations.find(
+            collection.find(
                 {
                     "user_id": user_id,
                     "conversation_id": conversation_id,
