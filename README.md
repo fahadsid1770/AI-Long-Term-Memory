@@ -72,5 +72,5 @@ We are building the standard for agentic memory, and we want your help. ALTM is 
 ---
 
 **License**: MIT  
-**Author**: [Your Name/Org]  
-**Status**: Production-Ready / Bug-Hunted 🛡️
+**Author**: Fahad Siddique Faisal  
+**Status**: Production-Ready
