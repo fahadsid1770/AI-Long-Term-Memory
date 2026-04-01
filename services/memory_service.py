@@ -2,75 +2,66 @@ import datetime
 from bson.objectid import ObjectId
 import pymongo
 from configuration.config import MAX_DEPTH, SIMILARITY_THRESHOLD, REINFORCEMENT_FACTOR, DECAY_FACTOR
-from database.mongodb import memory_nodes
+from database.mongodb import get_memory_nodes_collection
 from services.embedding_service import generate_embedding, get_chat_response
+from services.pageindex_service import categorize_content, update_user_master_index
 from utils.helpers import cosine_similarity
-from typing import List, Dict
+from typing import List, Dict, Optional
 from configuration.config import MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
 from utils.logger import logger
 
 def get_memory_collection():
-    """Get memory nodes collection with validation"""
-    if memory_nodes is None:
-        raise RuntimeError("Memory nodes collection not initialized")
-    return memory_nodes
+    """Get initialized memory nodes collection"""
+    return get_memory_nodes_collection()
 
 async def find_similar_memories(
-    user_id: str, embedding: List[float], top_n: int = 3
+    user_id: str, embedding: List[float], top_n: int = 3, filter_dict: Optional[Dict] = None
 ) -> List[Dict]:
     """
-    Find most similar memory nodes from the memory tree using vector search. Returns memories ranked by 
-    a combination of vector similarity and effective importance (which balances inherent information value 
-    with usage patterns). While raw importance represents the AI-assessed significance of information on 
-    a 0.1-1.0 scale, effective importance (importance * (1 + ln(access_count + 1))) amplifies this based 
-    on access frequency, creating a memory retrieval system that adapts to both content quality and user 
-    interaction patterns.
-    
-    Args:
-        user_id: User ID to filter by
-        embedding: Query embedding vector
-        top_n: Number of similar memories to return
-    Returns:
-        List of similar memory nodes with similarity scores
+    Find most similar memory nodes from the memory tree using vector search.
     """
     try:
         collection = get_memory_collection()
-        response = collection.aggregate(
-            [
-                {
-                    "$vectorSearch": {
-                        "index": MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME,
-                        "path": "embeddings",
-                        "queryVector": embedding,
-                        "numCandidates": 100,
-                        "limit": top_n,
-                        "filter": {"user_id": user_id},
-                    }
-                },
-                {"$addFields": {"similarity": {"$meta": "vectorSearchScore"}}},
-                {
-                    "$project": {
-                        "_id": 1,
-                        "content": 1,
-                        "summary": 1,
-                        "importance": 1,
-                        "effective_importance": {
-                            "$multiply": [
-                                "$importance",
-                                {"$add": [1, {"$ln": {"$add": ["$access_count", 1]}}]},
-                            ]
-                        },
-                        "similarity": 1,
-                        "access_count": 1,
-                        "timestamp": 1,
-                        "embeddings": 1,
-                    }
-                },
-            ]
-        )
+        
+        search_filter = {"user_id": user_id}
+        if filter_dict:
+            search_filter.update(filter_dict)
+            
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME,
+                    "path": "embeddings",
+                    "queryVector": embedding,
+                    "numCandidates": 100,
+                    "limit": top_n,
+                    "filter": search_filter,
+                }
+            },
+            {"$addFields": {"similarity": {"$meta": "vectorSearchScore"}}},
+            {
+                "$project": {
+                    "_id": 1,
+                    "content": 1,
+                    "summary": 1,
+                    "importance": 1,
+                    "effective_importance": {
+                        "$multiply": [
+                            "$importance",
+                            {"$add": [1, {"$ln": {"$add": ["$access_count", 1]}}]},
+                        ]
+                    },
+                    "similarity": 1,
+                    "access_count": 1,
+                    "timestamp": 1,
+                    "embeddings": 1,
+                }
+            },
+        ]
 
+        cursor = collection.aggregate(pipeline)
         results = []
-        for doc in response:
+        async for doc in cursor:
             doc_id = str(doc.pop("_id"))
             doc["id"] = doc_id
             results.append(doc)
@@ -80,40 +71,31 @@ async def find_similar_memories(
         logger.error(f"Error finding similar memory nodes: {str(e)}")
         raise
 
-
 async def update_importance_batch(user_id, embedding):
-    """Update importance of memories based on similarity to new content - optimized batch version"""
+    """Update importance of memories using cursor iteration to prevent OOM"""
     try:
-        # Get all user memories in one query
         collection = get_memory_collection()
-        user_memories = list(collection.find(
+        
+        # Use cursor instead of list(find()) to prevent memory exhaustion
+        cursor = collection.find(
             {"user_id": user_id},
             {"_id": 1, "embeddings": 1, "importance": 1, "access_count": 1}
-        ))
+        )
         
-        if not user_memories:
-            return
-        
-        # Prepare bulk operations
         bulk_operations = []
-        
-        for doc in user_memories:
+        async for doc in cursor:
             doc_id = doc["_id"]
             memory_embedding = doc["embeddings"]
             
-            # Calculate similarity
             similarity = cosine_similarity(embedding, memory_embedding)
             
             if similarity > SIMILARITY_THRESHOLD:
-                # Reinforce similar memories
-                new_importance = min(doc["importance"] * REINFORCEMENT_FACTOR, 1.0)  # Cap at 1.0
+                new_importance = min(doc["importance"] * REINFORCEMENT_FACTOR, 1.0)
                 new_access_count = doc["access_count"] + 1
             else:
-                # Decay less relevant memories
-                new_importance = max(doc["importance"] * DECAY_FACTOR, 0.1)  # Floor at 0.1
+                new_importance = max(doc["importance"] * DECAY_FACTOR, 0.1)
                 new_access_count = doc["access_count"]
             
-            # Add to bulk operations
             bulk_operations.append(
                 pymongo.UpdateOne(
                     {"_id": doc_id},
@@ -126,172 +108,122 @@ async def update_importance_batch(user_id, embedding):
                     }
                 )
             )
+            
+            # Execute in chunks to keep memory usage low
+            if len(bulk_operations) >= 100:
+                await collection.bulk_write(bulk_operations, ordered=False)
+                bulk_operations = []
         
-        # Execute all updates in one batch
         if bulk_operations:
-            result = collection.bulk_write(bulk_operations, ordered=False)
-            logger.info(f"Updated {result.modified_count} memories for user {user_id}")
+            await collection.bulk_write(bulk_operations, ordered=False)
             
     except Exception as e:
         logger.error(f"Error in batch importance update: {str(e)}")
         raise
 
-# Keep the old function for backwards compatibility but make it call the optimized version
-async def update_importance(user_id, embedding):
-    """Update importance of memories based on similarity to new content"""
-    await update_importance_batch(user_id, embedding)
-
-
 async def prune_memories(user_id):
-    """Prune less important memories exceeding the maximum depth"""
+    """Prune memories asynchronously"""
     collection = get_memory_collection()
-    count = collection.count_documents({"user_id": user_id})
+    count = await collection.count_documents({"user_id": user_id})
     if count > MAX_DEPTH:
-        # Find low importance memories to delete
-        cursor = (
-            collection.find({"user_id": user_id})
-            .sort([("importance", pymongo.ASCENDING)])
-            .limit(count - MAX_DEPTH)
-        )
-        # Delete them
-        for doc in cursor:
-            collection.delete_one({"_id": doc["_id"]})
-
+        cursor = collection.find({"user_id": user_id}).sort("importance", pymongo.ASCENDING).limit(count - MAX_DEPTH)
+        ids_to_delete = [doc["_id"] async for doc in cursor]
+        if ids_to_delete:
+            await collection.delete_many({"_id": {"$in": ids_to_delete}})
 
 async def remember_content(request):
-    """Store a new memory for the user, integrating with existing memories"""
+    """Stored new memory asynchronously"""
     try:
-        # Input validation
         if not request.content.strip():
             return {"message": "Cannot remember empty content"}
-        # Generate embedding for the content
+            
         embeddings = await generate_embedding(request.content)
-        # Check for similar existing memories before creating a new one
         similar_memories = await find_similar_memories(request.user_id, embeddings)
-        # If we already have very similar memories, reinforce them instead
+        
+        collection = get_memory_collection()
+        
         for memory in similar_memories:
-            if memory["similarity"] > 0.85:  # High similarity threshold
-                # Update existing memory instead of creating a new one
-                collection = get_memory_collection()
-                collection.update_one(
+            if memory["similarity"] > 0.85:
+                await collection.update_one(
                     {"_id": ObjectId(memory["id"])},
                     {
                         "$set": {
-                            "importance": memory["importance"] * REINFORCEMENT_FACTOR,
+                            "importance": min(memory["importance"] * REINFORCEMENT_FACTOR, 1.0),
                             "access_count": memory["access_count"] + 1,
-                            "last_accessed": datetime.datetime.now(
-                                datetime.timezone.utc
-                            ),
+                            "last_accessed": datetime.datetime.now(datetime.timezone.utc),
                         }
                     },
                 )
-                return {
-                    "message": "Reinforced existing memory",
-                    "memory_id": memory["id"],
-                }
-        # For new memories, assess importance
-        importance_assessment_prompt = (
-            "On a scale of 1-10, rate the importance of remembering this information long-term. "
-            "Consider factors like: uniqueness of information, actionability, personal significance, "
-            "and whether it contains key facts or decisions. Respond with just a number.\n\n"
-            f"Text to evaluate: {request.content}"
-        )
-        # Replaced send_to_bedrock with get_chat_response
-        importance_rating_text = await get_chat_response(importance_assessment_prompt)
-        # Extract numeric rating (handle potential non-numeric responses)
+                return {"message": "Reinforced existing memory", "memory_id": memory["id"]}
+
+        # Assessment and summary
+        importance_rating_text = await get_chat_response(f"Rate 1-10 importance: {request.content}")
         try:
-            importance_rating = float(
-                "".join(c for c in importance_rating_text if c.isdigit() or c == ".")
-            )
-            # Normalize to 0-1 range
+            importance_rating = float("".join(c for c in importance_rating_text if c.isdigit() or c == "."))
             importance_score = min(max(importance_rating / 10, 0.1), 1.0)
         except ValueError:
-            # Default if we can't parse the rating
             importance_score = 0.5
-        # Generate a concise summary
-        summary_prompt = (
-            "Create a one-sentence summary of the key information in this text. Be specific and concise:\n\n"
-            + request.content
-        )
-        # Replaced send_to_bedrock with get_chat_response
-        summary = await get_chat_response(summary_prompt)
-        # Create new memory node
+            
+        summary = await get_chat_response(f"One-sentence summary: {request.content}")
+
+        categorization = await categorize_content(request.user_id, request.content)
+        category = categorization.get("category", "General")
+        topic = categorization.get("topic", "Uncategorized")
+
         new_memory = {
             "user_id": request.user_id,
             "content": request.content,
             "summary": summary,
+            "category": category,
+            "topic": topic,
+            "index_path": f"/{category}/{topic}",
             "importance": importance_score,
             "access_count": 0,
             "timestamp": datetime.datetime.now(datetime.timezone.utc),
             "last_accessed": datetime.datetime.now(datetime.timezone.utc),
             "embeddings": embeddings,
         }
-        # Save to database
-        collection = get_memory_collection()
-        result = collection.insert_one(new_memory)
+        
+        result = await collection.insert_one(new_memory)
         memory_id = str(result.inserted_id)
-        # Find similar memories for potential merging
-        similar_memories = await find_similar_memories(request.user_id, embeddings)
-        # Merge with similar memories if they exceed threshold but aren't identical
+
+        await update_user_master_index(request.user_id, category, topic)
+        
+        # Merge logic
         for memory in similar_memories:
             if memory["id"] != memory_id and 0.7 < memory["similarity"] < 0.85:
                 # Combine content using AI
-                combined_content_prompt = (
-                    "These two texts contain related information. Combine them into a single cohesive text "
-                    "that preserves all important details from both without redundancy:\n\n"
-                    f"TEXT 1: {new_memory['content']}\n\n"
-                    f"TEXT 2: {memory['content']}"
-                )
-                # Replaced send_to_bedrock with get_chat_response
-                combined_content = await get_chat_response(
-                    f"{combined_content_prompt}\n\nCombine these texts effectively."
-                )
-                # Update metrics
-                updated_importance = (
-                    max(new_memory["importance"], memory["importance"]) * 1.1
-                )
-                updated_access_count = (
-                    new_memory["access_count"] + memory["access_count"]
-                )
-                # Average embeddings
-                updated_embeddings = [
-                    (a + b) / 2 for a, b in zip(embeddings, memory["embeddings"])
-                ]
-                # Generate new summary
-                summary_prompt = (
-                    "Create a one-sentence summary capturing the key information:\n\n"
-                    + combined_content
-                )
-                # Replaced send_to_bedrock with get_chat_response
-                summary = await get_chat_response(
-                    f"{summary_prompt}\n\nCreate a concise summary."
-                )
-                # Update the memory
-                collection.update_one(
+                combined_content = await get_chat_response(f"Combine: {new_memory['content']} AND {memory['content']}")
+                
+                # Check for vector dimension mismatch before averaging
+                if len(embeddings) != len(memory["embeddings"]):
+                    logger.error(f"Vector dimension mismatch during merge: {len(embeddings)} vs {len(memory['embeddings'])}")
+                    # Use the new embedding as a safer fallback
+                    updated_embeddings = embeddings
+                else:
+                    # Average embeddings safely
+                    updated_embeddings = [(a + b) / 2 for a, b in zip(embeddings, memory["embeddings"])]
+                
+                updated_importance = min(max(new_memory["importance"], memory["importance"]) * 1.1, 1.0)
+                new_summary = await get_chat_response(f"Summary: {combined_content}")
+                
+                await collection.update_one(
                     {"_id": ObjectId(memory_id)},
                     {
                         "$set": {
                             "content": combined_content,
-                            "summary": summary,
+                            "summary": new_summary,
                             "importance": updated_importance,
-                            "access_count": updated_access_count,
                             "embeddings": updated_embeddings,
                         }
                     },
                 )
-                # Delete the merged memory
-                collection.delete_one({"_id": ObjectId(memory["id"])})
+                await collection.delete_one({"_id": ObjectId(memory["id"])})
                 break
-        # Update importance of other memories based on relationship to this memory
+                
         await update_importance_batch(request.user_id, embeddings)
-        # Prune excessive memories if needed
         await prune_memories(request.user_id)
-        logger.info(f"Memory created for user {request.user_id}: {summary[:50]}...")
-        return {
-            "message": f"Remembered: {new_memory['summary']}",
-            "memory_id": memory_id,
-            "importance": importance_score,
-        }
+        return {"message": f"Remembered: {summary}", "memory_id": memory_id}
     except Exception as error:
         logger.error(f"Error remembering content: {error}")
         raise

@@ -6,8 +6,8 @@ class MessageInput(BaseModel):
     user_id: str = Field(..., min_length=1, description="User ID cannot be empty")
     conversation_id: str = Field(..., min_length=1, description="Conversation ID cannot be empty")
     type: str = Field(..., pattern="^(human|ai)$", description="Must be 'human' or 'ai'")
-    text: str = Field(..., min_length=1, description="Message text cannot be empty.")
-    timestamp: str | None = Field(None, description="UTC timestamp (optional)")
+    text: str = Field(..., min_length=1, max_length=10000, description="Message text (max 10000 chars)")
+    timestamp: Optional[str] = Field(None, description="UTC timestamp (optional)")
 
 class SearchRequest(BaseModel):
     user_id: str = Field(..., description="User ID")
@@ -22,6 +22,9 @@ class MemoryNode(BaseModel):
     user_id: str
     content: str
     summary: str = ""
+    category: str = "General"
+    topic: str = "Uncategorized"
+    index_path: str = "/General/Uncategorized"
     importance: float = 1.0
     access_count: int = 0
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())

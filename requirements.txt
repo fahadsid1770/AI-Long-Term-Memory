@@ -2,7 +2,8 @@ fastapi
 uvicorn
 python-dotenv
 pymongo
-boto3
+motor
+dnspython
 httpx
 numpy
 sentence-transformers

@@ -19,7 +19,7 @@ class Config:
     def _load_config(self):
         """Load all configuration values"""
         # Memory System Parameters
-        self.MAX_DEPTH = int(os.getenv("MAX_DEPTH", "5"))
+        self.MAX_DEPTH = int(os.getenv("MAX_DEPTH", "100"))
         self.SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
         self.DECAY_FACTOR = float(os.getenv("DECAY_FACTOR", "0.99"))
         self.REINFORCEMENT_FACTOR = float(os.getenv("REINFORCEMENT_FACTOR", "1.1"))
@@ -42,8 +42,10 @@ class Config:
         self.MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "ai-long-term-memory")
         self.CONVERSATIONS_COLLECTION = "conversations"
         self.MEMORY_NODES_COLLECTION = "memory_nodes"
+        self.USER_INDICES_COLLECTION = "user_master_indices"
         self.CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME = "conversations_vector_search_index"
         self.CONVERSATIONS_FULLTEXT_SEARCH_INDEX_NAME = "conversations_fulltext_search_index"
+        self.CONVERSATIONS_COMPOUND_SEARCH_INDEX_NAME = "conversations_compound_search_index"
         self.MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME = "memory_nodes_vector_search_index"
         
         # External API Configuration
@@ -163,8 +165,10 @@ MONGODB_URI = config.MONGODB_URI
 MONGODB_DB_NAME = config.MONGODB_DB_NAME
 CONVERSATIONS_COLLECTION = config.CONVERSATIONS_COLLECTION
 MEMORY_NODES_COLLECTION = config.MEMORY_NODES_COLLECTION
+USER_INDICES_COLLECTION = config.USER_INDICES_COLLECTION
 CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME = config.CONVERSATIONS_VECTOR_SEARCH_INDEX_NAME
 CONVERSATIONS_FULLTEXT_SEARCH_INDEX_NAME = config.CONVERSATIONS_FULLTEXT_SEARCH_INDEX_NAME
+CONVERSATIONS_COMPOUND_SEARCH_INDEX_NAME = config.CONVERSATIONS_COMPOUND_SEARCH_INDEX_NAME
 MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME = config.MEMORY_NODES_VECTOR_SEARCH_INDEX_NAME
 
 # Validate configuration on import

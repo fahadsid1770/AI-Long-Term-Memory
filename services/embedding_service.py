@@ -27,23 +27,25 @@ except Exception as e:
         logger.error(f"Failed to load fallback model: {fallback_e}")
         embedding_model = None
 
-# Simple LRU cache for embeddings
+# Simple LRU cache for embeddings with thread-safety
 EMBEDDING_CACHE = {}
 CACHE_MAX_SIZE = 1000  # Maximum number of cached embeddings
+cache_lock = asyncio.Lock()
 
 def _get_cache_key(text: str) -> str:
     """Generate a cache key for the text"""
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
-def _manage_cache_size():
+async def _manage_cache_size():
     """Ensure cache doesn't exceed maximum size by removing oldest entries"""
-    if len(EMBEDDING_CACHE) > CACHE_MAX_SIZE:
-        # Remove oldest 10% of entries (simple LRU approximation)
-        items_to_remove = len(EMBEDDING_CACHE) - CACHE_MAX_SIZE + int(CACHE_MAX_SIZE * 0.1)
-        keys_to_remove = list(EMBEDDING_CACHE.keys())[:items_to_remove]
-        for key in keys_to_remove:
-            del EMBEDDING_CACHE[key]
-        logger.info(f"Cache size managed: removed {items_to_remove} entries")
+    async with cache_lock:
+        if len(EMBEDDING_CACHE) > CACHE_MAX_SIZE:
+            # Remove oldest 10% of entries (simple LRU approximation)
+            items_to_remove = len(EMBEDDING_CACHE) - CACHE_MAX_SIZE + int(CACHE_MAX_SIZE * 0.1)
+            keys_to_remove = list(EMBEDDING_CACHE.keys())[:items_to_remove]
+            for key in keys_to_remove:
+                EMBEDDING_CACHE.pop(key, None)
+            logger.info(f"Cache size managed: removed {items_to_remove} entries")
 
 
 async def generate_embedding(text: str):
@@ -59,9 +61,10 @@ async def generate_embedding(text: str):
 
     # Check cache first
     cache_key = _get_cache_key(text)
-    if cache_key in EMBEDDING_CACHE:
-        logger.debug("Embedding cache hit")
-        return EMBEDDING_CACHE[cache_key]
+    async with cache_lock:
+        if cache_key in EMBEDDING_CACHE:
+            logger.debug("Embedding cache hit")
+            return EMBEDDING_CACHE[cache_key]
 
     try:
         # Run the synchronous embedding generation in a thread pool to avoid blocking
@@ -70,8 +73,10 @@ async def generate_embedding(text: str):
         embedding_list = embedding.tolist()
 
         # Cache the result
-        EMBEDDING_CACHE[cache_key] = embedding_list
-        _manage_cache_size()
+        async with cache_lock:
+            EMBEDDING_CACHE[cache_key] = embedding_list
+        
+        await _manage_cache_size()
 
         return embedding_list
     except Exception as e:
@@ -95,13 +100,14 @@ async def generate_embeddings_batch(texts: list):
     uncached_texts = []
     uncached_indices = []
 
-    for i, text in enumerate(texts):
-        cache_key = _get_cache_key(text)
-        if cache_key in EMBEDDING_CACHE:
-            cached_embeddings.append((i, EMBEDDING_CACHE[cache_key]))
-        else:
-            uncached_texts.append(text)
-            uncached_indices.append(i)
+    async with cache_lock:
+        for i, text in enumerate(texts):
+            cache_key = _get_cache_key(text)
+            if cache_key in EMBEDDING_CACHE:
+                cached_embeddings.append((i, EMBEDDING_CACHE[cache_key]))
+            else:
+                uncached_texts.append(text)
+                uncached_indices.append(i)
 
     # If all texts are cached, return them directly
     if not uncached_texts:
@@ -113,10 +119,12 @@ async def generate_embeddings_batch(texts: list):
         new_embeddings_list = new_embeddings.tolist()
 
         # Cache the new embeddings
-        for text, embedding in zip(uncached_texts, new_embeddings_list):
-            cache_key = _get_cache_key(text)
-            EMBEDDING_CACHE[cache_key] = embedding
-        _manage_cache_size()
+        async with cache_lock:
+            for text, embedding in zip(uncached_texts, new_embeddings_list):
+                cache_key = _get_cache_key(text)
+                EMBEDDING_CACHE[cache_key] = embedding
+        
+        await _manage_cache_size()
 
         # Combine cached and new embeddings in original order
         result = [None] * len(texts)
@@ -130,9 +138,22 @@ async def generate_embeddings_batch(texts: list):
         logger.error(f"Failed to generate batch Sentence-Transformers embeddings: {e}")
         raise
 
+# Global singleton for httpx client
+_async_client: Optional[httpx.AsyncClient] = None
+
+def get_httpx_client() -> httpx.AsyncClient:
+    """Get or create a singleton httpx.AsyncClient"""
+    global _async_client
+    if _async_client is None or _async_client.is_closed:
+        _async_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
+        )
+    return _async_client
+
 async def get_chat_response(prompt: str):
     """
-    Sends a prompt to OpenRouter to get a chat completion using a free model.
+    Sends a prompt to OpenRouter to get a chat completion using a singleton client.
     """
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -145,11 +166,11 @@ async def get_chat_response(prompt: str):
     }
     
     data = {
-        "model": "deepseek/deepseek-chat-v3.1:free",
+        "model": os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
         "messages": [
             {
                 "role":"system",
-                "content": "Your are a helpful assistant that helps people find information. If you don't know the answer, just say that you don't know, don't try to make up an answer."
+                "content": "You are a helpful assistant."
             },
             {   "role": "user", 
                 "content": prompt
@@ -157,16 +178,15 @@ async def get_chat_response(prompt: str):
         ],
     }
 
-    response = None  # Initialize response to None
+    client = get_httpx_client()
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
+        response = await client.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data
+        )
         
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         response_data = response.json()
         choices = response_data.get('choices', [])
         if choices and 'message' in choices[0]:
@@ -174,11 +194,10 @@ async def get_chat_response(prompt: str):
         else:
             raise HTTPException(status_code=500, detail="Invalid response structure from OpenRouter.")
         
+    except httpx.HTTPStatusError as e:
+        logger.error(f"OpenRouter API error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"LLM API Error: {e.response.text}")
     except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"Error communicating with LLM provider: {e}")
-    except (KeyError, IndexError) as err:
-        logger.error(f"Unexpected response format from OpenRouter: {err}")
-        if response is not None:
-            logger.error(f"Full response: {response.text}")
-        raise
+        logger.error(f"Network error with OpenRouter: {e}")
+        raise HTTPException(status_code=503, detail=f"Error communicating with LLM provider: {e}")
 

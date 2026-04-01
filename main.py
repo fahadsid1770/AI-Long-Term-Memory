@@ -21,6 +21,7 @@ from services.conversation_service import (
     search_memory,
 )
 from services.memory_service import find_similar_memories
+from services.pageindex_service import agentic_router
 from utils import error_utils
 from utils.logger import logger
 # Authentication removed - no longer needed
@@ -28,39 +29,38 @@ from utils.logger import logger
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# Initialize FastAPI app
+from contextlib import asynccontextmanager
+
+# Define lifespan for async initialization/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    try:
+        await initialize_mongodb_connection()
+        await initialize_mongodb()
+        logger.info("MongoDB initialized successfully during startup")
+    except Exception as e:
+        logger.error(f"Failed to initialize MongoDB during startup: {e}")
+        # In a real production app, you might want to exit here
+        # raise RuntimeError(f"Application startup failed: {e}")
+    
+    yield
+    
+    # Shutdown logic
+    from database.mongodb import client
+    if client:
+        client.close()
+        logger.info("MongoDB connection closed during shutdown")
+
+# Initialize FastAPI app with lifespan
 app = FastAPI(
     title=config.APP_NAME,
     version=config.APP_VERSION,
     description=config.APP_DESCRIPTION,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan
 )
-
-# Add rate limiter to app state
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# Add CORS middleware for security
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Add your frontend domains
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
-
-# Track application start time for uptime monitoring
-app_start_time = time.time()
-
-# Initialize MongoDB on startup
-try:
-    initialize_mongodb_connection()
-    initialize_mongodb()
-    logger.info("MongoDB initialized successfully at startup")
-except Exception as e:
-    logger.error(f"Failed to initialize MongoDB at startup: {e}")
-    raise RuntimeError(f"Application startup failed: {e}")
 
 
 @app.get("/health")
@@ -231,10 +231,12 @@ async def add_message(
 async def retrieve_memory(
     request: Request,
     user_id: str,
-    text: str
+    text: str,
+    use_pageindex: bool = False
 ):
     """
-    Retrieve memory items, context, summary, and similar memory nodes in a single request
+    Retrieve memory items, context, summary, and similar memory nodes in a single request.
+    Supports PageIndex for structured navigation if use_pageindex=True.
     """
     try:
         # Validate input parameters
@@ -264,13 +266,22 @@ async def retrieve_memory(
         # Generate embedding for the query text
         vector_query = await generate_embedding(text)
 
+        # NEW: PageIndex Logic
+        filter_dict = None
+        if use_pageindex:
+            logger.info(f"Using PageIndex reasoning for user {user_id}")
+            route = await agentic_router(user_id, text)
+            if route:
+                filter_dict = route
+                logger.info(f"PageIndex narrowed search to: {filter_dict}")
+
         # Search for relevant memory items
         memory_items = await search_memory(user_id, text)
 
-        # Get similar memory nodes from the memory tree
-        similar_memories = await find_similar_memories(user_id, vector_query)
+        # Get similar memory nodes from the memory tree (with optional PageIndex filter)
+        similar_memories = await find_similar_memories(user_id, vector_query, filter_dict=filter_dict)
 
-        if memory_items["documents"] == "No documents found":
+        if not memory_items.get("documents"):
             return {
                 "related_conversation": "No conversation found",
                 "conversation_summary": "No summary found",

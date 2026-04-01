@@ -1,6 +1,7 @@
 import datetime
 from fastapi import HTTPException
 from services.embedding_service import generate_embedding
+from utils.logger import logger
 
 class Message:
     def __init__(self, message_data, embeddings=None):
@@ -17,11 +18,18 @@ class Message:
         return cls(message_data, embeddings)
         
     def parse_timestamp(self, timestamp):
-        if timestamp:
+        if isinstance(timestamp, datetime.datetime):
+            if timestamp.tzinfo is None:
+                return timestamp.replace(tzinfo=datetime.timezone.utc)
+            return timestamp
+            
+        if timestamp and isinstance(timestamp, str) and timestamp.strip():
             try:
+                # Handle 'Z' suffix and other ISO formats
                 return datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid timestamp format")
+                logger.warning(f"Invalid timestamp format: {timestamp}, defaulting to now.")
+        
         return datetime.datetime.now(datetime.timezone.utc)
         
     def to_dict(self):
